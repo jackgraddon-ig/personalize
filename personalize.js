@@ -1,14 +1,14 @@
 /*!
- * personalize.js - Ignitium standardized personalization listener
- * v0.2.0
+ * personalize.js — Ignitium standardized personalization listener
+ * v0.3.0
  *
  * ONE reusable script, shared across every site. Host it externally and link it
  * in <head> (synchronous, no async/defer) so the deterministic paths resolve at
  * DOM-ready, before the visitor interacts. Zero required dependencies.
  *
  * Variant data is provided separately, as two globals defined BEFORE this file:
- *   window.PERSONALIZE_BASE      - shared/global defaults (optional)
- *   window.PERSONALIZE_OVERRIDES - per-site data (optional)
+ *   window.PERSONALIZE_BASE      — shared/global defaults (optional)
+ *   window.PERSONALIZE_OVERRIDES — per-site data (optional)
  * They are deep-merged, with OVERRIDES winning at the personalize-key level.
  *
  * Data shape (per account/persona slug):
@@ -59,7 +59,7 @@
   var CONFIG = {
     urlParam: "account",             // ?account=acme-corp  (deterministic)
     previewParam: "preview",         // ?preview=acme-corp  (QA override)
-    cookieName: null,                // e.g. "ignitium_persona" - set to enable the cookie signal
+    cookieName: null,                // e.g. "ignitium_persona" — set to enable the cookie signal
     eventName: "ignitium:identify",  // custom event broadcast by Media Viewer / Web Script
     signalPriority: ["preview", "url", "cookie", "event"], // highest -> lowest
     animate: true,                   // animate the late (post-paint) path
@@ -177,6 +177,16 @@
   var TEXT_TAGS = /^(H1|H2|H3|H4|H5|H6|P|SPAN|A|STRONG|EM|B|I|LI|BLOCKQUOTE|LABEL|BUTTON|FIGCAPTION|TD|TH|SMALL|CODE)$/;
   var DESCENDABLE = /^(H1|H2|H3|H4|H5|H6|P|SPAN|A|STRONG|EM|B|I|LI|BLOCKQUOTE|LABEL|BUTTON|FIGCAPTION|TD|TH|SMALL|CODE|DIV|SECTION|ARTICLE|HEADER|FOOTER|MAIN)$/;
 
+  // True if the element has its own non-whitespace text (mixed inline content),
+  // which means it IS the text element and should be replaced wholesale.
+  function hasOwnText(el) {
+    var n = el.childNodes || [];
+    for (var i = 0; i < n.length; i++) {
+      if (n[i].nodeType === 3 && n[i].nodeValue && n[i].nodeValue.trim() !== "") return true;
+    }
+    return false;
+  }
+
   // Walk down single-child / single-text-child chains to the element that should
   // hold the text. Iterative + depth-capped, so it can never loop.
   function textTarget(el) {
@@ -184,6 +194,7 @@
     while (depth < MAX) {
       var kids = cur.children;
       if (!kids || kids.length === 0) return cur;            // leaf: write here
+      if (hasOwnText(cur)) return cur;                       // mixed inline content: replace whole element
       if (kids.length === 1) {
         if (DESCENDABLE.test(kids[0].tagName)) { cur = kids[0]; depth++; continue; }
         return cur;                                          // single non-text child (img/svg): stop
