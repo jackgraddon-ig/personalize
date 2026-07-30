@@ -1,6 +1,6 @@
 /*!
  * personalize.js — Ignitium standardized personalization listener
- * v0.4.0
+ * v0.5.0
  *
  * ONE reusable script, shared across every site. Host it externally and link it
  * in <head> (synchronous, no async/defer) so the deterministic paths resolve at
@@ -24,19 +24,37 @@
  *   }
  *
  * type resolves to:
- *   "text"  -> textContent (safe default)
- *   "html"  -> innerHTML   (explicit opt-in; data is hand-maintained, use sparingly)
- *   any other value        -> setAttribute(type, value): "src", "href", "alt", "aria-label", ...
+ *   "text"          -> textContent (safe default)
+ *   "html"          -> innerHTML   (explicit opt-in; data is hand-maintained, use sparingly)
+ *   "media-viewer"  -> sets a bundle of Ignitium Media Viewer data-* attributes on the
+ *                      link/clickable element (value is a field map, see below). Never animates.
+ *   any other value -> setAttribute(type, value): "src", "href", "alt", "aria-label", ...
+ *
+ * media-viewer value is a field map. Keys are IMV attribute names with or without the
+ * "data-" prefix; the handler adds it. Only the fields you list are written; omitted
+ * fields keep their authored value, "" clears a field, null removes the attribute:
+ *   "video-cta": { type: "media-viewer", value: {
+ *     media:     "https://.../acme.mp4",
+ *     title:     "Acme — Paul Zeppenfeldt",
+ *     thumbnail: "https://.../acme.webp"
+ *   }}
+ *
+ * targets map (one wrapper key driving several sub-elements at once):
+ *   "hero-cta": { targets: {
+ *     "label": { type: "text",         target: ".button-text", value: "Watch Acme's story" },
+ *     "media": { type: "media-viewer", value: { media: "https://.../acme.mp4", title: "Acme" } }
+ *   }}
+ *   Each sub-target is a normal spec, resolved within the tagged wrapper. The single-spec
+ *   form ({ type, value }) is unchanged; use targets only when one key drives 2+ elements.
  *
  * Targeting (for Webflow wrappers where the tag is not on the exact element):
  *   - text swaps descend from the tagged wrapper to the text-bearing element
  *     (e.g. the <h1> inside a w-richtext div), preserving that element and its styles.
  *   - src/href swaps descend to the owning <img>/<a> if the tag sits on a wrapper.
- *   - For anything the auto-descent gets wrong, add an explicit selector:
- *       "cta": { type: "href", value: "/demo", target: "a.clickable-link" }
- *     spec.target is querySelector'd within the tagged element and always wins.
- *   - Multiple elements can share a key; all of them swap. Give a button's visible
- *     label and its sr-only spans the same key to keep them in sync.
+ *   - media-viewer descends to the element carrying the IMV attributes ([data-media] /
+ *     [data-clickable-wrap] / <a>), so the tag can live on the button wrapper.
+ *   - spec.target narrows the search root first, then per-type descent runs inside it.
+ *   - Multiple elements can share a key; all of them swap.
  *
  * Behavior:
  *   - Authored DOM content is the default. If a key has no variant value, the
@@ -45,10 +63,12 @@
  *   - Signals resolve in priority order (preview > url > cookie > event).
  *   - The first applied signal LOCKS the page; later, lower-or-equal signals are ignored.
  *   - Deterministic signals present at load (preview/url/cookie) swap instantly.
- *   - A late enrichment event (fired after paint) animates visible elements and
- *     hard-swaps offscreen ones. Enhances with GSAP + SplitText when present.
+ *   - A late enrichment event (fired after paint) animates visible text and hard-swaps
+ *     offscreen ones. Attribute/media-viewer swaps always apply instantly.
+ *   - If the variant data isn't defined yet at DOM-ready, a one-shot window.load retry
+ *     re-resolves once everything has run.
  *
- * v0.1 boundaries (intentional):
+ * v0.x boundaries (intentional):
  *   - One active key at a time. Mixed persona+account on one page picks a single winner.
  *   - Lock-on-first-applied. A later "better" identification does not correct an earlier one.
  */
@@ -67,7 +87,7 @@
     debug: false                     // or append ?pdebug=1 to any URL
   };
 
-  var VERSION = "0.1.0";
+  var VERSION = "0.5.0";
 
   // ---- Small utilities -------------------------------------------------------
   function assign(t) {
@@ -159,26 +179,38 @@
            resolveKey(detail.domain)  || null;
   }
 
-  // ---- Applying values -------------------------------------------------------
+  // ---- Spec normalization + expansion ---------------------------------------
   function normSpec(spec) {
     if (spec == null) return null;
     if (typeof spec === "string") return { type: "text", value: spec };
     return spec;
   }
 
-  // A data-personalize tag often sits on a Webflow wrapper (w-richtext, component
-  // root) while the real text/link lives nested inside. Resolve the true target.
-  //
-  // Precedence: an explicit spec.target selector always wins. Otherwise:
-  //   text -> descend to the text-bearing element (e.g. the <h1> in a w-richtext)
-  //   html -> the tagged element itself (innerHTML replaces its contents)
-  //   attr -> descend to the element that owns the attribute (<img> for src, <a> for href)
+  // A key's data may be a single spec { type, value } OR a compound
+  // { targets: { name: spec, ... } }. Expand to a flat list of atomic specs.
+  function expandSpecs(raw) {
+    var spec = normSpec(raw);
+    if (!spec) return [];
+    if (spec.targets && typeof spec.targets === "object") {
+      var out = [];
+      for (var k in spec.targets) {
+        if (!Object.prototype.hasOwnProperty.call(spec.targets, k)) continue;
+        var s = normSpec(spec.targets[k]);
+        if (s) out.push(s);
+      }
+      return out;
+    }
+    return [spec];
+  }
+
+  // ---- Target resolution -----------------------------------------------------
+  // A data-personalize tag often sits on a Webflow wrapper while the real element
+  // lives nested inside. spec.target narrows the search root; per-type descent then
+  // finds the exact node within it.
 
   var TEXT_TAGS = /^(H1|H2|H3|H4|H5|H6|P|SPAN|A|STRONG|EM|B|I|LI|BLOCKQUOTE|LABEL|BUTTON|FIGCAPTION|TD|TH|SMALL|CODE)$/;
   var DESCENDABLE = /^(H1|H2|H3|H4|H5|H6|P|SPAN|A|STRONG|EM|B|I|LI|BLOCKQUOTE|LABEL|BUTTON|FIGCAPTION|TD|TH|SMALL|CODE|DIV|SECTION|ARTICLE|HEADER|FOOTER|MAIN)$/;
 
-  // True if the element has its own non-whitespace text (mixed inline content),
-  // which means it IS the text element and should be replaced wholesale.
   function hasOwnText(el) {
     var n = el.childNodes || [];
     for (var i = 0; i < n.length; i++) {
@@ -187,8 +219,6 @@
     return false;
   }
 
-  // Walk down single-child / single-text-child chains to the element that should
-  // hold the text. Iterative + depth-capped, so it can never loop.
   function textTarget(el) {
     var cur = el, depth = 0, MAX = 6;
     while (depth < MAX) {
@@ -216,21 +246,46 @@
       if (/^(A|AREA|LINK)$/.test(el.tagName)) return el;
       return el.querySelector("a") || el;
     }
-    return el; // generic attribute (aria-label, etc.) stays on the tagged element
+    return el; // generic attribute (aria-label, etc.) stays on the element
+  }
+
+  // Find the element carrying the Ignitium Media Viewer attributes. The tag may sit
+  // directly on the clickable element or on its wrapper; either way, land on the node
+  // that owns data-media / data-clickable-wrap (or an <a> as a last resort).
+  function mvTarget(base) {
+    if (base.hasAttribute && (base.hasAttribute("data-media") || base.hasAttribute("data-clickable-wrap"))) return base;
+    if (/^(A|AREA)$/.test(base.tagName)) return base;
+    return (base.querySelector && base.querySelector("[data-media],[data-clickable-wrap],a")) || base;
   }
 
   function getTarget(el, spec) {
-    if (spec.target) return el.querySelector(spec.target) || el; // explicit override
-    if (spec.type === "text") return textTarget(el);
-    if (spec.type === "html") return el;
-    return attrTarget(el, spec.type);
+    var base = spec.target ? (el.querySelector(spec.target) || el) : el;
+    if (spec.type === "media-viewer") return mvTarget(base);
+    if (spec.type === "text")         return textTarget(base);
+    if (spec.type === "html")         return base;
+    return attrTarget(base, spec.type);
+  }
+
+  // ---- Applying values -------------------------------------------------------
+  // media-viewer: write a bundle of data-* attributes. Only listed fields change;
+  // "" clears a field, null removes it, omitted fields keep their authored value.
+  function applyMediaViewer(t, fields) {
+    if (!t || !fields || typeof fields !== "object") return;
+    for (var k in fields) {
+      if (!Object.prototype.hasOwnProperty.call(fields, k)) continue;
+      var name = k.indexOf("data-") === 0 ? k : "data-" + k;
+      var v = fields[k];
+      if (v === null || v === undefined) { if (t.removeAttribute) t.removeAttribute(name); }
+      else if (t.setAttribute) t.setAttribute(name, String(v));
+    }
   }
 
   function applyValue(el, spec) {
     var t = getTarget(el, spec);
-    if (spec.type === "text")      t.textContent = spec.value;
-    else if (spec.type === "html") t.innerHTML  = spec.value;
-    else                           t.setAttribute(spec.type, spec.value);
+    if (spec.type === "text")              t.textContent = spec.value;
+    else if (spec.type === "html")         t.innerHTML   = spec.value;
+    else if (spec.type === "media-viewer") applyMediaViewer(t, spec.value);
+    else                                   t.setAttribute(spec.type, spec.value);
   }
 
   // ---- Motion (late path only) ----------------------------------------------
@@ -249,8 +304,7 @@
     return r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw;
   }
 
-  // All motion helpers operate on the already-resolved target element `t`.
-  function splitText(t, value, ST) {
+  function splitTextSwap(t, value, ST) {
     var g = win.gsap;
     g.to(t, { opacity: 0, duration: 0.12, ease: "power1.in", onComplete: function () {
       t.textContent = value;
@@ -285,11 +339,12 @@
   }
 
   function animateSwap(el, spec) {
-    if (prefersReduced()) { applyValue(el, spec); return; }
+    if (spec.type === "media-viewer") { applyValue(el, spec); return; } // config swap: never animate
+    if (prefersReduced())             { applyValue(el, spec); return; }
     var t = getTarget(el, spec);
     if (spec.type === "text") {
       var ST = getSplit();
-      if (ST && hasGsap()) return splitText(t, spec.value, ST);
+      if (ST && hasGsap()) return splitTextSwap(t, spec.value, ST);
       if (hasGsap())       return fadeText(t, spec.value);
       return cssFadeText(t, spec.value);
     }
@@ -301,6 +356,14 @@
     } else {
       applyValue(el, spec);
     }
+  }
+
+  // Apply one atomic spec to the tagged element, animating only when it makes sense.
+  function swapOne(el, spec, animate, reduced) {
+    if (!spec || !spec.type) return;
+    if (spec.type === "media-viewer") { applyValue(el, spec); return; } // always instant
+    if (animate && !reduced && isVisible(getTarget(el, spec))) animateSwap(el, spec);
+    else applyValue(el, spec);
   }
 
   // ---- Orchestration ---------------------------------------------------------
@@ -323,34 +386,47 @@
     for (var i = 0; i < nodes.length; i++) {
       var el = nodes[i];
       var key = el.getAttribute("data-personalize");
-      var spec = normSpec(variant.personalize[key]);
-      if (!spec) continue;                       // leave authored content in place
-      if (animate && !reduced && isVisible(getTarget(el, spec))) animateSwap(el, spec);
-      else applyValue(el, spec);
-      swapped++;
+      var atoms = expandSpecs(variant.personalize[key]);
+      for (var a = 0; a < atoms.length; a++) { swapOne(el, atoms[a], animate, reduced); swapped++; }
     }
     log("applied", slug, "via", signalName, "(" + swapped + " elements, animate=" + !!animate + ")");
     return true;
   }
 
-  function initialResolve() {
-    DATA = buildData(); // rebuild now that all head scripts have run (order-independent)
-
+  // Gather signals, apply the highest-priority match. Returns true if a swap was applied.
+  function doResolve() {
+    DATA = buildData(); // rebuild from current globals (order-independent)
     var candidates = [];
     var pv = resolveKey(getParam(CONFIG.previewParam)); if (pv) candidates.push(["preview", pv]);
     var ur = resolveKey(getParam(CONFIG.urlParam));     if (ur) candidates.push(["url", ur]);
     var ck = resolveKey(getCookie(CONFIG.cookieName));  if (ck) candidates.push(["cookie", ck]);
     if (queuedEvent) { var ek = keyFromEvent(queuedEvent); if (ek) candidates.push(["event", ek]); }
-
     candidates.sort(function (a, b) { return priorityIndex(a[0]) - priorityIndex(b[0]); });
-    initialResolveDone = true;
-
     if (candidates.length) {
       apply(candidates[0][1], candidates[0][0], /* animate */ false); // resolved at load -> instant
-    } else {
-      log("no signal at load; authored content stands");
+      return true;
     }
+    return false;
+  }
+
+  function initialResolve() {
+    var applied = doResolve();
+    initialResolveDone = true;
     queuedEvent = null;
+    if (applied) return;
+
+    log("no signal at load; authored content stands");
+
+    // If variant data hasn't arrived yet (e.g. externalized/late-injected data blocks
+    // that define the globals after DOMContentLoaded), try once more after full load.
+    if (Object.keys(DATA).length === 0) {
+      win.addEventListener("load", function onLoad() {
+        win.removeEventListener("load", onLoad);
+        if (state.locked) return;
+        if (doResolve()) log("resolved after load (data arrived late)");
+        else log("still no data after load; check that PERSONALIZE_BASE/OVERRIDES are defined");
+      });
+    }
   }
 
   function onIdentify(e) {
@@ -364,7 +440,7 @@
     }
     var slug = keyFromEvent(detail);
     if (!slug) { log("event: no key match for", detail); return; }
-    apply(slug, "event", CONFIG.animate); // late path -> visible elements animate
+    apply(slug, "event", CONFIG.animate); // late path -> visible text animates
   }
 
   // ---- Boot ------------------------------------------------------------------
