@@ -1,6 +1,6 @@
 /*!
  * personalize.js — Ignitium standardized personalization listener
- * v0.3.0
+ * v0.4.0
  *
  * ONE reusable script, shared across every site. Host it externally and link it
  * in <head> (synchronous, no async/defer) so the deterministic paths resolve at
@@ -334,6 +334,8 @@
   }
 
   function initialResolve() {
+    DATA = buildData(); // rebuild now that all head scripts have run (order-independent)
+
     var candidates = [];
     var pv = resolveKey(getParam(CONFIG.previewParam)); if (pv) candidates.push(["preview", pv]);
     var ur = resolveKey(getParam(CONFIG.urlParam));     if (ur) candidates.push(["url", ur]);
